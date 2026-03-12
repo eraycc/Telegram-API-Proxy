@@ -35,12 +35,12 @@
 
 ```bash
 # 运行脚本
-deno run --allow-net --allow-env telegram-api-proxy.ts
+deno run --allow-net --allow-env main.ts
 
 # 或使用环境变量
 ACCESS_PASSWORD=your_password \
 RATE_LIMIT_ENABLED=true \
-deno run --allow-net --allow-env telegram-api-proxy.ts
+deno run --allow-net --allow-env main.ts
 ```
 
 ## ⚙️ 配置说明
