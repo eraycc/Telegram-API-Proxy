@@ -10,9 +10,12 @@ interface Config {
   proxyHost: string;
   proxyPort: number;
   
-  // 密码验证
+  // 安全路径配置（可选）
+  securePath: string;
+  
+  // 密码验证（用于首页）
   accessPassword: string;
-  cookieMaxAge: number; // 秒
+  cookieMaxAge: number;
   cookieName: string;
   
   // 请求限制
@@ -50,6 +53,8 @@ interface Config {
 
 // 从环境变量加载配置
 function loadConfig(): Config {
+  const securePath = Deno.env.get("SECURE_PATH") || "";
+  
   return {
     // Telegram API 配置
     telegramApiBase: Deno.env.get("TELEGRAM_API_BASE") || "https://api.telegram.org",
@@ -57,6 +62,9 @@ function loadConfig(): Config {
     // 代理配置
     proxyHost: Deno.env.get("PROXY_HOST") || "0.0.0.0",
     proxyPort: parseInt(Deno.env.get("PROXY_PORT") || "8000"),
+    
+    // 安全路径配置
+    securePath: securePath ? `/${securePath.replace(/^\//, '')}` : "",
     
     // 密码验证
     accessPassword: Deno.env.get("ACCESS_PASSWORD") || "",
@@ -102,26 +110,24 @@ const CONFIG = loadConfig();
 // ==================== 密码验证工具 ====================
 function validatePassword(password: string): boolean {
   if (!CONFIG.accessPassword) {
-    return true; // 如果没有设置密码，直接通过
+    return true;
   }
   return password === CONFIG.accessPassword;
 }
 
 function generateAuthCookie(): string {
-  // 简单的认证令牌，实际应用中可以使用更安全的方式
   const token = btoa(`${CONFIG.accessPassword}:${Date.now()}`);
   return token;
 }
 
 function validateAuthCookie(cookieValue: string | null): boolean {
   if (!CONFIG.accessPassword) {
-    return true; // 如果没有设置密码，直接通过
+    return true;
   }
   
   if (!cookieValue) return false;
   
   try {
-    // 解码 token
     const decoded = atob(cookieValue);
     const [password] = decoded.split(':');
     return password === CONFIG.accessPassword;
@@ -153,7 +159,7 @@ class Logger {
 
   private getBeijingTime(): string {
     const date = new Date();
-    date.setHours(date.getHours() + 8); // UTC+8
+    date.setHours(date.getHours() + 8);
     return date.toISOString().replace('T', ' ').substring(0, 19);
   }
 
@@ -168,7 +174,6 @@ class Logger {
     };
 
     if (data) {
-      // 处理请求/响应体大小限制
       if (data.body && typeof data.body === 'string' && data.body.length > 1000) {
         data.body = data.body.substring(0, 1000) + '... [truncated]';
       }
@@ -202,7 +207,6 @@ class Logger {
     }
   }
 
-  // 专门用于记录请求
   async logRequest(req: Request, startTime: number, response?: Response, error?: Error) {
     if (!this.enabled) return;
 
@@ -220,7 +224,6 @@ class Logger {
       duration: Date.now() - startTime,
     };
 
-    // 记录请求体
     if (this.logRequestBody && req.body && req.method !== 'GET' && req.method !== 'HEAD') {
       try {
         const clonedReq = req.clone();
@@ -247,7 +250,6 @@ class Logger {
       logData.status = response.status;
       logData.statusText = response.statusText;
       
-      // 记录响应体
       if (this.logResponseBody && response.body) {
         try {
           const clonedRes = response.clone();
@@ -277,7 +279,7 @@ class Logger {
 
 const logger = new Logger(CONFIG);
 
-// ==================== 速率限制器（内存优化版） ====================
+// ==================== 速率限制器 ====================
 class RateLimiter {
   private limits: Map<string, { count: number; resetTime: number }>;
   private cleanupInterval: number;
@@ -322,7 +324,6 @@ class RateLimiter {
     const limit = this.limits.get(clientId);
 
     if (!limit || now > limit.resetTime) {
-      // 新的窗口
       this.limits.set(clientId, {
         count: 1,
         resetTime: now + this.window,
@@ -342,7 +343,6 @@ class RateLimiter {
       };
     }
 
-    // 增加计数
     limit.count++;
     return { 
       allowed: true, 
@@ -351,7 +351,6 @@ class RateLimiter {
     };
   }
 
-  // 获取当前限制器状态
   getStats() {
     return {
       totalEntries: this.limits.size,
@@ -423,7 +422,6 @@ class MetricsCollector {
       (this.metrics.requestsByMethod.get(method) || 0) + 1
     );
     
-    // 只记录路径的前两级，避免高基数
     const pathParts = path.split('/').filter(p => p);
     const pathKey = pathParts.length > 2 ? `/${pathParts[0]}/${pathParts[1]}/*` : path;
     this.metrics.requestsByPath.set(
@@ -444,7 +442,6 @@ class MetricsCollector {
       this.metrics.bytesTransferred += bytes;
     }
 
-    // 记录响应时间（滑动窗口）
     this.metrics.responseTimes.push(duration);
     if (this.metrics.responseTimes.length > this.maxResponseTimeSamples) {
       this.metrics.responseTimes.shift();
@@ -455,7 +452,6 @@ class MetricsCollector {
     const now = Date.now();
     const uptime = now - this.metrics.lastResetTime;
     
-    // 计算响应时间百分位数
     const sortedTimes = [...this.metrics.responseTimes].sort((a, b) => a - b);
     const p50 = sortedTimes[Math.floor(sortedTimes.length * 0.5)] || 0;
     const p95 = sortedTimes[Math.floor(sortedTimes.length * 0.95)] || 0;
@@ -504,7 +500,6 @@ const metrics = new MetricsCollector(CONFIG.metricsEnabled);
 
 // ==================== 工具函数 ====================
 
-// 生成客户端标识
 async function getClientId(req: Request): Promise<string> {
   const ip = req.headers.get("cf-connecting-ip") || 
              req.headers.get("x-forwarded-for")?.split(",")[0].trim() || 
@@ -519,7 +514,6 @@ async function getClientId(req: Request): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
 }
 
-// 清理请求头
 function cleanRequestHeaders(headers: Headers): Headers {
   if (!CONFIG.hideProxyHeaders) {
     return headers;
@@ -537,8 +531,8 @@ function cleanRequestHeaders(headers: Headers): Headers {
     "x-deno-subhost",
     "via",
     "forwarded",
-    "cookie", // 移除 cookie，不转发给 Telegram
-    "authorization", // 移除 authorization，不转发给 Telegram
+    "cookie",
+    "authorization",
   ]);
 
   headers.forEach((value, key) => {
@@ -558,7 +552,6 @@ function cleanRequestHeaders(headers: Headers): Headers {
   return cleaned;
 }
 
-// 清理响应头
 function cleanResponseHeaders(headers: Headers): Headers {
   if (!CONFIG.hideProxyHeaders) {
     return headers;
@@ -570,7 +563,7 @@ function cleanResponseHeaders(headers: Headers): Headers {
     "x-deno-region",
     "server",
     "via",
-    "set-cookie", // 移除 set-cookie，不暴露给客户端
+    "set-cookie",
   ]);
 
   headers.forEach((value, key) => {
@@ -587,7 +580,6 @@ function cleanResponseHeaders(headers: Headers): Headers {
   return cleaned;
 }
 
-// CORS 头
 function getCorsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": CONFIG.allowedOrigins.includes("*") ? "*" : CONFIG.allowedOrigins.join(", "),
@@ -597,7 +589,6 @@ function getCorsHeaders(): HeadersInit {
   };
 }
 
-// 带重试的 fetch
 async function fetchWithRetry(url: string, options: RequestInit, attempt: number = 1): Promise<Response> {
   try {
     const controller = new AbortController();
@@ -615,7 +606,6 @@ async function fetchWithRetry(url: string, options: RequestInit, attempt: number
       throw error;
     }
 
-    // 指数退避延迟
     const delay = CONFIG.retryDelay * Math.pow(CONFIG.retryBackoff, attempt - 1);
     logger.warn(`Request failed, retrying (${attempt}/${CONFIG.retryMaxAttempts}) after ${delay}ms`, {
       url,
@@ -915,7 +905,6 @@ function renderLoginPage(error?: string): string {
                 return;
             }
             
-            // 显示加载状态
             submitBtn.disabled = true;
             loading.classList.add('show');
             errorMessage.style.display = 'none';
@@ -932,10 +921,8 @@ function renderLoginPage(error?: string): string {
                 const data = await response.json();
                 
                 if (data.success) {
-                    // 登录成功，刷新页面
                     window.location.reload();
                 } else {
-                    // 显示错误
                     errorMessage.style.display = 'block';
                     errorMessage.textContent = data.message || '密码错误';
                     document.getElementById('password').classList.add('error');
@@ -944,13 +931,11 @@ function renderLoginPage(error?: string): string {
                 errorMessage.style.display = 'block';
                 errorMessage.textContent = '登录失败，请重试';
             } finally {
-                // 隐藏加载状态
                 submitBtn.disabled = false;
                 loading.classList.remove('show');
             }
         }
         
-        // 按回车键提交
         document.getElementById('password').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 handleSubmit(e);
@@ -962,7 +947,7 @@ function renderLoginPage(error?: string): string {
   `;
 }
 
-// ==================== 状态页面（需要认证） ====================
+// ==================== 状态页面 ====================
 function renderStatusPage(): string {
   const stats = metrics.getStats();
   const beijingTime = new Date();
@@ -1225,6 +1210,7 @@ function renderStatusPage(): string {
                 <span class="status-badge status-healthy">● 运行中</span>
             </h1>
             <p>监控时间: ${beijingTime.toISOString().replace('T', ' ').substring(0, 19)}</p>
+            ${CONFIG.securePath ? `<p>安全路径: <code style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 4px;">${CONFIG.securePath}</code></p>` : ''}
         </div>
 
         <div class="grid">
@@ -1380,12 +1366,10 @@ function renderStatusPage(): string {
 
     <script>
         async function handleLogout() {
-            // 清除 cookie
             document.cookie = "${CONFIG.cookieName}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
             window.location.reload();
         }
         
-        // 自动刷新页面（每分钟）
         setTimeout(() => {
             location.reload();
         }, 60000);
@@ -1405,7 +1389,6 @@ async function handleRequest(req: Request): Promise<Response> {
   let error: Error | null = null;
 
   try {
-    // 记录请求开始
     await logger.logRequest(req, startTime);
 
     // WebSocket 处理
@@ -1421,7 +1404,7 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    // 认证端点
+    // 认证端点（不需要安全路径）
     if (url.pathname === "/auth" && req.method === "POST") {
       try {
         const body = await req.json();
@@ -1464,54 +1447,7 @@ async function handleRequest(req: Request): Promise<Response> {
       }
     }
 
-    // 检查认证（首页需要认证）
-    if (url.pathname === "/" || url.pathname === "") {
-      // 获取认证 cookie
-      const cookies = req.headers.get("cookie") || "";
-      const authCookie = cookies.split(';')
-        .map(c => c.trim())
-        .find(c => c.startsWith(`${CONFIG.cookieName}=`));
-      
-      const token = authCookie ? authCookie.split('=')[1] : null;
-      
-      // 验证 cookie
-      if (!validateAuthCookie(token)) {
-        // 如果没有密码设置，直接显示状态页面
-        if (!CONFIG.accessPassword) {
-          return new Response(renderStatusPage(), {
-            status: 200,
-            headers: {
-              "Content-Type": "text/html; charset=utf-8",
-              "Cache-Control": "no-cache",
-              ...getCorsHeaders(),
-            },
-          });
-        }
-        
-        // 检查 URL 参数中是否有错误信息
-        const error = url.searchParams.get("error");
-        return new Response(renderLoginPage(error ? "密码错误" : undefined), {
-          status: 200,
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "no-cache",
-            ...getCorsHeaders(),
-          },
-        });
-      }
-      
-      // 认证通过，显示状态页面
-      return new Response(renderStatusPage(), {
-        status: 200,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-cache",
-          ...getCorsHeaders(),
-        },
-      });
-    }
-
-    // 健康检查 API（不需要认证）
+    // 健康检查 API（不需要认证，不需要安全路径）
     if (url.pathname === CONFIG.healthCheckPath) {
       const stats = metrics.getStats();
       return new Response(JSON.stringify({
@@ -1534,9 +1470,39 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
+    // 首页需要认证
+    if (url.pathname === "/" || url.pathname === "") {
+      const cookies = req.headers.get("cookie") || "";
+      const authCookie = cookies.split(';')
+        .map(c => c.trim())
+        .find(c => c.startsWith(`${CONFIG.cookieName}=`));
+      
+      const token = authCookie ? authCookie.split('=')[1] : null;
+      
+      if (!validateAuthCookie(token) && CONFIG.accessPassword) {
+        const error = url.searchParams.get("error");
+        return new Response(renderLoginPage(error ? "密码错误" : undefined), {
+          status: 200,
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache",
+            ...getCorsHeaders(),
+          },
+        });
+      }
+      
+      return new Response(renderStatusPage(), {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-cache",
+          ...getCorsHeaders(),
+        },
+      });
+    }
+
     // 指标 API（需要认证）
     if (CONFIG.metricsEnabled && url.pathname === CONFIG.metricsPath) {
-      // 检查认证
       const cookies = req.headers.get("cookie") || "";
       const authCookie = cookies.split(';')
         .map(c => c.trim())
@@ -1564,30 +1530,41 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    // 其他路径（代理 API）- 需要认证
-    // 检查认证
-    const cookies = req.headers.get("cookie") || "";
-    const authCookie = cookies.split(';')
-      .map(c => c.trim())
-      .find(c => c.startsWith(`${CONFIG.cookieName}=`));
+    // ===== Telegram API 代理转发 =====
+    // 检查路径是否需要转发到 Telegram
+    let targetPath = url.pathname;
     
-    const token = authCookie ? authCookie.split('=')[1] : null;
-    
-    if (!validateAuthCookie(token) && CONFIG.accessPassword) {
-      return new Response(JSON.stringify({
-        ok: false,
-        error_code: 401,
-        description: "Unauthorized",
-      }), {
-        status: 401,
-        headers: {
-          "Content-Type": "application/json",
-          ...getCorsHeaders(),
-        },
-      });
+    // 如果设置了安全路径，检查请求路径是否以安全路径开头
+    if (CONFIG.securePath) {
+      if (targetPath.startsWith(CONFIG.securePath)) {
+        // 移除安全路径前缀
+        targetPath = targetPath.substring(CONFIG.securePath.length);
+      } else {
+        // 不是以安全路径开头，返回 404
+        return new Response(JSON.stringify({
+          ok: false,
+          error_code: 404,
+          description: "Not Found",
+        }), {
+          status: 404,
+          headers: {
+            "Content-Type": "application/json",
+            ...getCorsHeaders(),
+          },
+        });
+      }
     }
 
-    // 速率限制检查
+    // 构建目标 URL
+    const targetUrl = `${CONFIG.telegramApiBase}${targetPath}${url.search}`;
+    
+    logger.debug(`Proxying request`, {
+      originalPath: url.pathname,
+      targetPath: targetPath,
+      targetUrl: targetUrl,
+    });
+
+    // 速率限制检查（对所有请求都进行限制）
     const clientId = await getClientId(req);
     const rateLimit = await rateLimiter.check(clientId);
     
@@ -1626,9 +1603,6 @@ async function handleRequest(req: Request): Promise<Response> {
       });
     }
 
-    // 构建目标 URL
-    const targetUrl = `${CONFIG.telegramApiBase}${url.pathname}${url.search}`;
-
     // 清理请求头
     const cleanedHeaders = cleanRequestHeaders(req.headers);
 
@@ -1639,12 +1613,12 @@ async function handleRequest(req: Request): Promise<Response> {
       redirect: "manual",
     };
 
-    // 添加请求体（如果有）
+    // 添加请求体
     if (req.method !== "GET" && req.method !== "HEAD") {
       requestOptions.body = req.body;
     }
 
-    // 发送请求（带重试）
+    // 发送请求
     const proxyResponse = await fetchWithRetry(targetUrl, requestOptions);
 
     // 获取响应体大小
@@ -1723,6 +1697,7 @@ logger.info('Telegram API Proxy starting', {
   config: {
     telegramApiBase: CONFIG.telegramApiBase,
     port: CONFIG.proxyPort,
+    securePath: CONFIG.securePath || "未设置（所有路径都转发）",
     authEnabled: !!CONFIG.accessPassword,
     rateLimitEnabled: CONFIG.rateLimitEnabled,
     retryEnabled: CONFIG.retryEnabled,
